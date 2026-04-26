@@ -15,11 +15,17 @@ produce.
 import logging
 from typing import Any, Dict, List, Optional
 
+import librosa
 from transformers import pipeline
 
 from speech2text_api.speech2text_abs import Speech2Text
 
 logger = logging.getLogger()
+
+# Whisper's feature extractor always expects 16 kHz mono — resample upfront so
+# the HF pipeline doesn't have to (and so a mismatched sample rate doesn't
+# silently corrupt the input features).
+WHISPER_SAMPLE_RATE = 16000
 
 
 class Whisper(Speech2Text):
@@ -56,8 +62,17 @@ class Whisper(Speech2Text):
         """
         generate_kwargs = {"language": lang, "task": "transcribe"}
 
+        # Pre-decode with librosa instead of letting the HF pipeline run
+        # ``ffmpeg_read`` over the raw bytes. ffmpeg_read is strict about
+        # container format detection and raises ValueError on perfectly
+        # valid m4a/mp3 files coming out of common phone recorders;
+        # librosa+audioread+soundfile handle the same files. Pass the raw
+        # numpy array straight to the pipeline so ffmpeg_read is bypassed.
+        np_seq, sr = librosa.load(fpath, sr=WHISPER_SAMPLE_RATE, mono=True)
+        inputs = {"raw": np_seq, "sampling_rate": sr}
+
         result = self.pipe(
-            fpath,
+            inputs,
             return_timestamps=return_timestamps if return_timestamps else False,
             generate_kwargs=generate_kwargs,
         )
