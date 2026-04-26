@@ -94,10 +94,15 @@ async def create_tmp_file(file: UploadFile, output_fname: str = "input.wav") -> 
 async def transcribe_default(
     file: UploadFile,
     timestamps: bool = False,
+    beam_size: Optional[int] = None,
+    vad_filter: Optional[bool] = None,
 ) -> TranscriptResponse:
     tmp_fname = await create_tmp_file(file)
     result = speech2text_wrapper.transcribe_file(
-        tmp_fname, return_timestamps=timestamps,
+        tmp_fname,
+        return_timestamps=timestamps,
+        beam_size=beam_size,
+        vad_filter=vad_filter,
     )
     return TranscriptResponse(**result)
 
@@ -107,9 +112,15 @@ async def transcribe_chosen_lang(
     lang: str,
     file: UploadFile,
     timestamps: bool = False,
+    beam_size: Optional[int] = None,
+    vad_filter: Optional[bool] = None,
 ) -> TranscriptResponse:
     tmp_fname = await create_tmp_file(file)
     result = speech2text_wrapper.transcribe_file(
-        tmp_fname, lang=lang, return_timestamps=timestamps,
+        tmp_fname,
+        lang=lang,
+        return_timestamps=timestamps,
+        beam_size=beam_size,
+        vad_filter=vad_filter,
     )
     return TranscriptResponse(**result)

@@ -101,8 +101,15 @@ class Whisper(Speech2Text):
         fpath: str,
         lang: str = "cs",
         return_timestamps: bool = False,
+        beam_size: Optional[int] = None,
+        vad_filter: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Transcribe an audio file.
+
+        ``beam_size`` and ``vad_filter`` are per-call overrides for the
+        env-configured defaults — clients (e.g. QualReAI's quality preset
+        selector) can pick speed vs. quality without restarting the server.
+        Pass ``None`` to use the env defaults.
 
         Returns:
           - ``transcript``: full text (always present)
@@ -110,6 +117,9 @@ class Whisper(Speech2Text):
             is True, otherwise ``None``. faster-whisper always emits segments
             with timestamps internally — we just decide whether to expose them.
         """
+        effective_beam = beam_size if beam_size is not None else self.beam_size
+        effective_vad = vad_filter if vad_filter is not None else self.vad_filter
+
         # Decode to 16 kHz mono with librosa — same as before to avoid
         # ffmpeg_read pickiness on phone-recorded m4a/mp3 files.
         np_seq, _sr = librosa.load(fpath, sr=WHISPER_SAMPLE_RATE, mono=True)
@@ -117,8 +127,8 @@ class Whisper(Speech2Text):
         segments_iter, _info = self.model.transcribe(
             np_seq,
             language=lang,
-            beam_size=self.beam_size,
-            vad_filter=self.vad_filter,
+            beam_size=effective_beam,
+            vad_filter=effective_vad,
             # Don't return word-level timestamps — segment level is enough and
             # word-level adds non-trivial overhead.
             word_timestamps=False,
