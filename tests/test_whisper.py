@@ -27,7 +27,8 @@ def test_whisper_with_timestamps() -> None:
     )
 
     assert "testovací" in result["transcript"]
-    # The tiny test model + short clip should still produce at least one
-    # usable timestamped chunk.
+    # faster-whisper always emits segments internally; with return_timestamps
+    # we expose them. Tiny model on a short clip should produce at least one.
     assert isinstance(result["segments"], list)
     assert all("start" in s and "end" in s and "text" in s for s in result["segments"])
+    assert all(s["end"] >= s["start"] for s in result["segments"])
