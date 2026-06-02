@@ -29,10 +29,14 @@ ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.1.0
 RUN pip install --no-cache-dir /app
 
 # Persistent HF cache so pyannote / faster-whisper don't re-download on every
-# pod restart. The Dockerfile snapshot-downloads pyannote weights below.
+# pod restart. The Dockerfile snapshot-downloads pyannote weights below; runtime
+# pod runs as non-root (UID 1000 in ped-aivr-ns), so the cache dir must be
+# world-writable (mode 1777, sticky bit) — otherwise the first HF call from the
+# non-root user crashes with EACCES.
 ENV HF_HOME=/opt/hf-cache
 ENV TRANSFORMERS_CACHE=/opt/hf-cache
 ENV NUMBA_CACHE_DIR=/tmp
+RUN mkdir -p /opt/hf-cache && chmod 1777 /opt/hf-cache
 
 # Pre-fetch pyannote.audio model weights at build time so the image is
 # self-contained and the first /diarize call doesn't pay the ~30 MB download
