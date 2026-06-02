@@ -59,7 +59,12 @@ RUN --mount=type=secret,id=hf_token,required=false \
     else \
         echo 'Skipping pyannote prefetch (no hf_token secret); will download lazily at runtime if HF_TOKEN env is set.'; \
     fi && \
-    rm -f /tmp/prefetch_pyannote.py
+    rm -f /tmp/prefetch_pyannote.py && \
+    chmod -R 1777 /opt/hf-cache
+# Recursive chmod above: snapshot_download creates subdirs as root (the build
+# user). The runtime container runs as UID 1000 in ped-aivr-ns; without
+# recursive 1777 the runtime user gets EACCES when faster-whisper (or any
+# subsequent HF download) tries to mkdir under /opt/hf-cache/hub.
 
 EXPOSE 5000
 CMD ["speech2text-api", "httpapi", "--host", "0.0.0.0", "--port", "5000"]
