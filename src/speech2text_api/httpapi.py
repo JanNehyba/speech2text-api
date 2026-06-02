@@ -1,9 +1,11 @@
+import asyncio
 import logging
 import os
+import shutil
 import tempfile
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import HTMLResponse
@@ -44,6 +46,44 @@ class TranscriptResponse(BaseModel):
     segments: Optional[List[TranscriptSegment]] = None
 
 
+class DiarizationTurn(BaseModel):
+    """One speaker turn with start/end timestamps in seconds."""
+    start: float
+    end: float
+    speaker_label: str
+
+
+class DiarizationSpeakerEmbedding(BaseModel):
+    """Mean embedding vector for one detected speaker, weighted by speech duration.
+
+    Used by QualReAI as a long-lived "voice profile" so the same person can
+    be auto-suggested when they appear in subsequent recordings of the same
+    project.
+    """
+    vector: List[float]
+    seconds_observed: float
+
+
+class DiarizationSegmentEmbedding(BaseModel):
+    """Per-turn embedding, returned only when ``return_segment_embeddings=true``.
+
+    Persisted on Segment rows so QualReAI's merge/split operations can
+    recompute speaker profiles exactly without re-running pyannote.
+    """
+    start: float
+    end: float
+    speaker_label: str
+    vector: List[float]
+
+
+class DiarizationResponse(BaseModel):
+    turns: List[DiarizationTurn]
+    num_speakers_detected: int
+    diarization_model: str
+    speaker_embeddings: Dict[str, DiarizationSpeakerEmbedding]
+    segment_embeddings: Optional[List[DiarizationSegmentEmbedding]] = None
+
+
 def get_app() -> FastAPI:
     app = FastAPI(
         title=settings.title,
@@ -68,12 +108,21 @@ INDEX_HTML = """
 Add <code>?timestamps=true</code> to <code>/transcribe/{lang}/</code> to get
 segment-level start/end times for each phrase.
 </p>
+<p>
+POST <code>/diarize/</code> for speaker diarization (pyannote.audio 3.1).
+</p>
 """.lstrip()
 
 
 @app.get("/", include_in_schema=False)
 def index() -> HTMLResponse:
     return HTMLResponse(INDEX_HTML)
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz() -> Dict[str, str]:
+    """Liveness probe — does not load models, just confirms the process is up."""
+    return {"status": "ok"}
 
 
 # Single Whisper instance — model is loaded once at process startup.
@@ -124,3 +173,104 @@ async def transcribe_chosen_lang(
         vad_filter=vad_filter,
     )
     return TranscriptResponse(**result)
+
+
+@app.post("/diarize/", response_model=DiarizationResponse)
+async def diarize(
+    file: UploadFile,
+    num_speakers: int = 2,
+    min_duration: float = 0.5,
+    return_segment_embeddings: bool = False,
+) -> DiarizationResponse:
+    """Run pyannote.audio 3.1 speaker diarization on an uploaded audio file.
+
+    Query params:
+        num_speakers: Exact speaker count hint (default 2 for 1-on-1
+            interviews). Forces the clustering step to that many clusters
+            — the biggest single accuracy win for the 1-on-1 case.
+        min_duration: Discard turns shorter than this many seconds (default
+            0.5). Filters out sub-100ms silence/cough artefacts.
+        return_segment_embeddings: When True, also return one embedding
+            vector per turn. Used by QualReAI's merge/split flow in
+            Phase 2. Off by default — embedding crops cost ~10-100 ms
+            per turn on CPU and the F1 path doesn't need them.
+
+    Concurrency: capped to one in-flight diarization per process. The
+    second concurrent caller waits on a semaphore. Diarization on the
+    MU-sized CPU pod runs ~0.3-0.5× realtime, so a 45-min audio file
+    holds the semaphore for ~20-45 minutes — clients must use a matching
+    HTTP timeout.
+
+    Returns 503 if pyannote can't initialise (typically a missing
+    HF_TOKEN secret or unaccepted model EULA on huggingface.co).
+    """
+    from speech2text_api.diarize import (  # noqa: PLC0415 - lazy import for fast startup
+        diarize_audio_file,
+        get_concurrency_semaphore,
+    )
+
+    tmp_fname = await create_tmp_file(file, output_fname="diarize_input.wav")
+    tmp_dir = os.path.dirname(tmp_fname)
+
+    sem = get_concurrency_semaphore()
+    try:
+        async with sem:
+            # Run the synchronous pyannote inference in a worker thread so
+            # the event loop stays responsive to other requests / probes.
+            loop = asyncio.get_running_loop()
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: diarize_audio_file(
+                        tmp_fname,
+                        num_speakers=num_speakers,
+                        min_duration=min_duration,
+                        return_segment_embeddings=return_segment_embeddings,
+                    ),
+                )
+            except RuntimeError as exc:
+                logger.exception("Diarization pipeline initialisation failed")
+                raise HTTPException(
+                    status_code=503, detail=str(exc)
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Diarization failed")
+                raise HTTPException(
+                    status_code=500, detail=f"Diarization failed: {exc}"
+                ) from exc
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+    return DiarizationResponse(
+        turns=[
+            DiarizationTurn(
+                start=t.start, end=t.end, speaker_label=t.speaker_label
+            )
+            for t in result.turns
+        ],
+        num_speakers_detected=result.num_speakers_detected,
+        diarization_model=result.diarization_model,
+        speaker_embeddings={
+            label: DiarizationSpeakerEmbedding(
+                vector=stats.mean_embedding,
+                seconds_observed=stats.seconds_observed,
+            )
+            for label, stats in result.speaker_embeddings.items()
+        },
+        segment_embeddings=(
+            [
+                DiarizationSegmentEmbedding(
+                    start=s["start"],
+                    end=s["end"],
+                    speaker_label=s["speaker_label"],
+                    vector=s["vector"],
+                )
+                for s in result.segment_embeddings
+            ]
+            if result.segment_embeddings is not None
+            else None
+        ),
+    )

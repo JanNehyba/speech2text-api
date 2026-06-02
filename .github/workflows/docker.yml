@@ -48,3 +48,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # HF_TOKEN is consumed by the pyannote.audio prefetch step in the
+          # Dockerfile. Passed via BuildKit secret so it never appears in any
+          # image layer. Set the repo secret HF_TOKEN to a HuggingFace read
+          # token that has accepted the EULAs for:
+          #   pyannote/speaker-diarization-3.1
+          #   pyannote/segmentation-3.0
+          #   pyannote/wespeaker-voxceleb-resnet34-LM
+          # If the secret is empty, the prefetch is skipped and the runtime
+          # pod must provide HF_TOKEN itself for a lazy first-request download.
+          secrets: |
+            hf_token=${{ secrets.HF_TOKEN }}

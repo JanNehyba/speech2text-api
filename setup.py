@@ -33,6 +33,16 @@ setup(
         "librosa>=0.10",
         "numpy>=1.26,<2",
     ],
+    extras_require={
+        # Speaker diarization stack. Optional so `pip install .` for tests
+        # of the transcription path stays light; the Docker build pulls
+        # this in explicitly via requirements.txt.
+        "diarize": [
+            "pyannote.audio>=3.1,<3.2",
+            "torch>=2.0,<3",
+            "torchaudio>=2.0,<3",
+        ],
+    },
     entry_points={
         "console_scripts": ["speech2text-api=speech2text_api.__main__:main"]
     },
