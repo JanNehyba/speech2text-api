@@ -51,21 +51,15 @@ RUN mkdir -p /opt/hf-cache && chmod 1777 /opt/hf-cache
 # Or skip the prefetch entirely (the runtime will download lazily, but the pod
 # then needs HF_TOKEN in its env and the first request stalls):
 #   docker build --build-arg SKIP_PYANNOTE_PREFETCH=1 ...
+COPY docker/prefetch_pyannote.py /tmp/prefetch_pyannote.py
 ARG SKIP_PYANNOTE_PREFETCH=0
 RUN --mount=type=secret,id=hf_token,required=false \
     if [ "$SKIP_PYANNOTE_PREFETCH" != "1" ] && [ -s /run/secrets/hf_token ]; then \
-        HF_TOKEN="$(cat /run/secrets/hf_token)" python -c "\
-import os; \
-from huggingface_hub import snapshot_download; \
-tok = os.environ.get('HF_TOKEN'); \
-snapshot_download('pyannote/speaker-diarization-3.1', token=tok); \
-snapshot_download('pyannote/segmentation-3.0', token=tok); \
-snapshot_download('pyannote/wespeaker-voxceleb-resnet34-LM', token=tok); \
-print('pyannote weights cached at', os.environ['HF_HOME']);\
-"; \
+        HF_TOKEN="$(cat /run/secrets/hf_token)" python /tmp/prefetch_pyannote.py; \
     else \
         echo 'Skipping pyannote prefetch (no hf_token secret); will download lazily at runtime if HF_TOKEN env is set.'; \
-    fi
+    fi && \
+    rm -f /tmp/prefetch_pyannote.py
 
 EXPOSE 5000
 CMD ["speech2text-api", "httpapi", "--host", "0.0.0.0", "--port", "5000"]
