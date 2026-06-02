@@ -38,7 +38,7 @@ setup(
         # of the transcription path stays light; the Docker build pulls
         # this in explicitly via requirements.txt.
         "diarize": [
-            "pyannote.audio>=3.1,<3.2",
+            "pyannote.audio>=3.3,<4",
             "torch>=2.0,<3",
             "torchaudio>=2.0,<3",
         ],
