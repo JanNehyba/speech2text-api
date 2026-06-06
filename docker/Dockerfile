@@ -14,14 +14,19 @@ WORKDIR /app
 # Install non-torch Python deps first so changes to source code reuse the
 # layer cache.
 COPY requirements.txt /app/requirements.txt
-# pyannote.audio 4.0 requires torch>=2.8 and torchaudio>=2.8 (plus
-# torchcodec>=0.7 which pulls torch 2.7+ wheels). Install CPU torch first
-# from PyTorch's wheel index — the default PyPI wheels include 2 GB of
-# CUDA libs we don't need on the MU CPU pod.
+# pyannote.audio 4.0 requires torch>=2.8, torchaudio>=2.8, and
+# torchcodec>=0.7. Install all three from PyTorch's CPU wheel index first —
+# the default PyPI wheels include 2 GB of CUDA libs we don't need on the MU
+# CPU pod. CRITICAL: torchcodec MUST come from the CPU index too; the PyPI
+# default torchcodec wheel links against libnvrtc.so.13 and fails to load
+# at runtime on CPU-only torch with:
+#   OSError: libnvrtc.so.13: cannot open shared object file
+# After pinning these three, the regular `pip install -r requirements.txt`
+# pass sees them already satisfied and won't re-fetch the CUDA wheels.
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cpu \
-        "torch==2.8.*" "torchaudio==2.8.*" && \
+        "torch==2.8.*" "torchaudio==2.8.*" "torchcodec==0.7.*" && \
     pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy source and install the package in non-editable mode.
