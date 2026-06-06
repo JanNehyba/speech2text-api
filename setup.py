@@ -45,6 +45,8 @@ setup(
             "pyannote.audio>=4.0,<5",
             "torch>=2.0,<3",
             "torchaudio>=2.0,<3",
+            # Core dep of pyannote.audio 4.x — see requirements.txt comment.
+            "torchcodec>=0.7,<1",
         ],
     },
     entry_points={
