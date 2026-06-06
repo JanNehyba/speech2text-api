@@ -11,7 +11,15 @@ statsd>=4.0
 sentry-sdk>=1.40
 faster-whisper>=1.1.0
 librosa>=0.10
-numpy>=1.26,<2
+# numpy<2 was originally pinned because faster-whisper / older librosa had
+# ABI issues with numpy 2.0. With pyannote.audio 4.0 (and its scipy>=1.16,
+# matplotlib>=3.10, lightning, torch 2.8 chain) the resolver wants
+# numpy>=2 transitively — leaving <2 in place causes pip to backtrack
+# through every numba version until it tries to build numba 0.56 from
+# source (which guards against Python>=3.11 and crashes the build).
+# Letting numpy go to 2.x is safe: torch 2.8, faster-whisper 1.1+,
+# librosa 0.11, and pyannote 4 all advertise numpy 2 support.
+numpy>=1.26,<3
 # transformers is a transitive dep of faster-whisper for tokenizer utilities.
 # Pin the floor to a version that supports whisper-large-v3-turbo.
 transformers>=4.45,<5
