@@ -14,10 +14,14 @@ WORKDIR /app
 # Install non-torch Python deps first so changes to source code reuse the
 # layer cache.
 COPY requirements.txt /app/requirements.txt
+# pyannote.audio 4.0 requires torch>=2.8 and torchaudio>=2.8 (plus
+# torchcodec>=0.7 which pulls torch 2.7+ wheels). Install CPU torch first
+# from PyTorch's wheel index — the default PyPI wheels include 2 GB of
+# CUDA libs we don't need on the MU CPU pod.
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cpu \
-        torch==2.4.* torchaudio==2.4.* && \
+        "torch==2.8.*" "torchaudio==2.8.*" && \
     pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy source and install the package in non-editable mode.
