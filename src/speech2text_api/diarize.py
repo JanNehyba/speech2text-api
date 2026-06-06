@@ -194,9 +194,12 @@ def _load_pipeline() -> Pipeline:
             logger.info(
                 "Loading pyannote pipeline %s (CPU)", DIARIZATION_MODEL
             )
+            # pyannote 4.x renamed the HF auth kwarg from
+            # use_auth_token -> token (matching huggingface_hub). The 3.x
+            # name was removed outright and now raises TypeError.
             pipeline = Pipeline.from_pretrained(
                 DIARIZATION_MODEL,
-                use_auth_token=hf_token,
+                token=hf_token,
             )
             if pipeline is None:
                 raise RuntimeError(
@@ -247,7 +250,7 @@ def _get_embedding_inference(pipeline: Pipeline) -> Inference:
                 )
                 emb_candidate = Model.from_pretrained(
                     FALLBACK_EMBEDDING_MODEL,
-                    use_auth_token=hf_token,
+                    token=hf_token,
                 )
                 emb_candidate.to(torch.device("cpu"))
 
