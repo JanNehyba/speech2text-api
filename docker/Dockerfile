@@ -39,8 +39,17 @@ ENV NUMBA_CACHE_DIR=/tmp
 RUN mkdir -p /opt/hf-cache && chmod 1777 /opt/hf-cache
 
 # Pre-fetch pyannote.audio model weights at build time so the image is
-# self-contained and the first /diarize call doesn't pay the ~30 MB download
-# latency. The HF_TOKEN secret is mounted via BuildKit so it never appears in
+# self-contained and the first /diarize call doesn't pay the download
+# latency. Both pyannote 3.1 and 4.x community-1 weights are baked in so
+# the pod can switch via PYANNOTE_DIARIZATION_MODEL without rebuild.
+#
+# community-1 also requires EULA acceptance on huggingface.co under the
+# same account as the existing 3.1 / segmentation-3.0 / wespeaker EULAs.
+# If the EULA isn't accepted yet, prefetch logs a warning and skips that
+# model; the build still succeeds, and the runtime will retry the
+# download lazily (provided HF_TOKEN env is set on the pod).
+#
+# The HF_TOKEN secret is mounted via BuildKit so it never appears in
 # any layer.
 #
 # Build with:

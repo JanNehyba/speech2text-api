@@ -1,10 +1,13 @@
-"""Speaker diarization via pyannote.audio 3.x.
+"""Speaker diarization via pyannote.audio 4.x (community-1 pipeline).
 
 CPU-only inference. Models are loaded lazily on the first request so the
 container can pass liveness probes during start-up without paying the
-~12 MB segmentation + ~12 MB wespeaker embedding download cost up-front
-(the Dockerfile snapshot-downloads them at build time, so first-request
-loading is just a torch ``state_dict`` load from disk, sub-second).
+download cost up-front (the Dockerfile snapshot-downloads weights for both
+3.1 and community-1 at build time, so first-request loading is just a
+torch ``state_dict`` load from disk, sub-second). Which pipeline gets
+loaded is controlled by the ``PYANNOTE_DIARIZATION_MODEL`` env var; default
+is ``pyannote/speaker-diarization-community-1`` (4.0 family with VBx
+clustering, deep-research 2026-06-05 finding).
 
 Concurrency: pyannote peaks at ~2-3 GiB of working memory and saturates
 all CPU cores. The MU pod runs faster-whisper alongside; running two
@@ -28,13 +31,29 @@ For the cross-transcript voice-ID feature in QualReAI we return two kinds
 of embeddings:
 
 * ``speaker_embeddings`` — one mean vector per detected speaker, weighted
-  by total speech duration. Used as the long-lived "voice profile".
+  by total speech duration. Used as the long-lived "voice profile". In
+  pyannote 4.x these come back on ``DiarizeOutput.speaker_embeddings``
+  (np.ndarray of shape ``(num_speakers, dim)``, ordered to match
+  ``output.speaker_diarization.labels()``). No more ``return_embeddings=True``
+  kwarg — they're always returned unless ``legacy=True`` was set at
+  pipeline construction.
 * ``segment_embeddings`` (opt-in via ``return_segment_embeddings=True``)
   — one vector per turn, persisted on ``Segment`` rows so merge/split
   operations can recompute profiles exactly without re-running pyannote.
   All vectors come from the *same* embedding model the diarization
   pipeline uses internally, so cosine similarities are directly
   comparable across both shapes.
+
+**Exclusive speaker mode** (pyannote 4.x feature): the pipeline always
+computes both a regular diarization (with overlap regions assigned to
+multiple speakers) and an *exclusive* diarization (every moment belongs
+to at most one speaker). Toggling via ``exclusive_speaker_mode=True``
+on ``diarize_audio_file`` picks the exclusive annotation as the source
+of truth for the returned turns — useful when the downstream consumer
+(transcript alignment, coding UI) can't represent overlap and would
+otherwise produce ``None``/cross-talk artefacts. Speaker labels and
+embedding rows are identical across both modes; only the turn boundaries
+differ.
 """
 
 from __future__ import annotations
@@ -58,11 +77,13 @@ from pyannote.core import Segment
 logger = logging.getLogger(__name__)
 
 DIARIZATION_MODEL = os.environ.get(
-    "PYANNOTE_DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1"
+    "PYANNOTE_DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1"
 )
-# Fallback embedding model used only if ``pipeline.embedding`` isn't exposed
-# by the pyannote version we end up with. Matches the model 3.1 uses
-# internally so per-turn embeddings stay comparable to the pipeline output.
+# Fallback embedding model used only if ``pipeline.embedding`` / ``_embedding``
+# isn't exposed by the pyannote version we end up with. Matches the model
+# community-1 uses internally (a WeSpeaker variant) so per-turn embeddings
+# stay comparable to the pipeline output. wespeaker-voxceleb-resnet34-LM
+# also works as a 3.1-compatible fallback.
 FALLBACK_EMBEDDING_MODEL = os.environ.get(
     "PYANNOTE_EMBEDDING_MODEL", "pyannote/wespeaker-voxceleb-resnet34-LM"
 )
@@ -192,37 +213,48 @@ def _get_embedding_inference(pipeline: Pipeline) -> Inference:
     """Get Inference for per-turn embedding crops, compatible with pipeline output.
 
     Prefers the pipeline's own embedding submodel so per-turn vectors
-    occupy the same space as the mean-per-speaker vectors returned by
-    ``pipeline(..., return_embeddings=True)``. Falls back to a canonical
-    pyannote model that 3.1 ships with.
+    occupy the same space as the mean-per-speaker vectors returned on
+    ``DiarizeOutput.speaker_embeddings``. Falls back to a canonical
+    pyannote model.
+
+    pyannote 4.x stores embeddings as ``pipeline._embedding`` (a
+    ``PretrainedSpeakerEmbedding`` wrapper); 3.x exposed ``pipeline.embedding``
+    as a raw ``Model``. We try both, and if neither yields an ``Inference``
+    we can crop with, we load a standalone fallback Model and wrap it.
     """
     global _embedding_inference
     if _embedding_inference is not None:
         return _embedding_inference
     with _init_lock:
         if _embedding_inference is None:
-            # pyannote 3.x exposes the underlying embedding model on the
-            # pipeline. Attribute name has bounced between versions.
-            emb_model = (
-                getattr(pipeline, "embedding", None)
-                or getattr(pipeline, "_embedding", None)
+            # pyannote 3.x → `.embedding` (raw Model); 4.x → `._embedding`
+            # (PretrainedSpeakerEmbedding) and `.embedding` is the dict spec
+            # used at construction. We probe both, but require something
+            # that is either an Inference or wrappable in one (a Model).
+            emb_candidate = (
+                getattr(pipeline, "_embedding", None)
+                or getattr(pipeline, "embedding", None)
             )
-            if emb_model is None:
+            wrappable = isinstance(emb_candidate, (Inference, Model))
+
+            if not wrappable:
                 hf_token = os.environ.get("HF_TOKEN") or None
                 logger.info(
-                    "Pipeline did not expose embedding model; loading "
-                    "fallback %s",
+                    "Pipeline did not expose a wrappable embedding model "
+                    "(got %s); loading fallback %s",
+                    type(emb_candidate).__name__,
                     FALLBACK_EMBEDDING_MODEL,
                 )
-                emb_model = Model.from_pretrained(
+                emb_candidate = Model.from_pretrained(
                     FALLBACK_EMBEDDING_MODEL,
                     use_auth_token=hf_token,
                 )
-                emb_model.to(torch.device("cpu"))
-            if isinstance(emb_model, Inference):
-                _embedding_inference = emb_model
+                emb_candidate.to(torch.device("cpu"))
+
+            if isinstance(emb_candidate, Inference):
+                _embedding_inference = emb_candidate
             else:
-                _embedding_inference = Inference(emb_model, window="whole")
+                _embedding_inference = Inference(emb_candidate, window="whole")
     return _embedding_inference
 
 
@@ -231,6 +263,7 @@ def diarize_audio_file(
     num_speakers: int = 2,
     min_duration: float = 0.5,
     return_segment_embeddings: bool = False,
+    exclusive_speaker_mode: bool = False,
 ) -> DiarizationResult:
     """Run diarization on an audio file.
 
@@ -246,32 +279,64 @@ def diarize_audio_file(
             embedding vector. Cost: one model crop per turn (~10-100 ms
             each on CPU), so disable for the F1 path that only needs
             mean-per-speaker.
+        exclusive_speaker_mode: When True (pyannote 4.x), return the
+            *exclusive* diarization annotation where every moment belongs
+            to at most one speaker (no cross-talk overlap). Useful when
+            the downstream consumer can't represent overlapping turns and
+            would otherwise produce ``None``/cross-talk gaps. Default False
+            keeps the standard with-overlap output that matches 3.x
+            behaviour. Has no effect on a 3.x pipeline (which doesn't
+            produce an exclusive annotation) — we silently fall back to
+            the regular annotation in that case.
     """
     pipeline = _load_pipeline()
 
     # Pre-convert any incoming audio (MP3, M4A, MP4, WAV, ...) to a clean
     # 16 kHz mono PCM WAV in /tmp. This dodges pyannote-audio issue #1752
     # (torchaudio MP3 seek not sample-accurate -> torch.vstack crash in
-    # SpeakerDiarization.get_embeddings). WAV produced by soundfile has
-    # exact sample alignment, so torchaudio's Audio.crop returns full
-    # 10s = 160000-sample chunks every time.
+    # SpeakerDiarization.get_embeddings). The bug carries over to pyannote
+    # 4.x identically (upstream wontfix — torchaudio is still the loader).
+    # WAV produced by soundfile has exact sample alignment, so Audio.crop
+    # returns full 10s = 160000-sample chunks every time.
     with _ensure_pcm_wav(audio_path) as wav_path:
-        annotation_result = pipeline(
-            wav_path,
-            num_speakers=num_speakers,
-            return_embeddings=True,
-        )
+        # pyannote 4.x: pipeline(audio, num_speakers=N) returns a
+        # DiarizeOutput dataclass with .speaker_diarization,
+        # .exclusive_speaker_diarization, and .speaker_embeddings. The
+        # old `return_embeddings=True` kwarg is gone — embeddings are
+        # always returned unless the pipeline was constructed with
+        # `legacy=True`.
+        # pyannote 3.x: same call without that kwarg returns just an
+        # Annotation; we detect both shapes below.
+        raw_output = pipeline(wav_path, num_speakers=num_speakers)
 
-        # pyannote 3.x: pipeline(..., return_embeddings=True) returns a tuple
-        # (Annotation, np.ndarray of shape (num_clusters, embed_dim)).
-        if (
-            isinstance(annotation_result, tuple)
-            and len(annotation_result) == 2
-        ):
-            annotation, mean_embeddings = annotation_result
-        else:  # pragma: no cover - shouldn't happen on 3.1
-            annotation = annotation_result
+        # Normalise to (annotation, mean_embeddings) across pyannote 3.x and 4.x.
+        if hasattr(raw_output, "speaker_diarization"):
+            # pyannote 4.x DiarizeOutput
+            mean_embeddings = getattr(raw_output, "speaker_embeddings", None)
+            if exclusive_speaker_mode and hasattr(
+                raw_output, "exclusive_speaker_diarization"
+            ):
+                annotation = raw_output.exclusive_speaker_diarization
+            else:
+                annotation = raw_output.speaker_diarization
+        elif isinstance(raw_output, tuple) and len(raw_output) == 2:
+            # pyannote 3.x with return_embeddings=True path — kept for
+            # compatibility if someone forces the model env back to 3.1.
+            annotation, mean_embeddings = raw_output
+            if exclusive_speaker_mode:
+                logger.warning(
+                    "exclusive_speaker_mode=True requested but pipeline "
+                    "returned 3.x tuple (no exclusive_speaker_diarization). "
+                    "Falling back to standard annotation."
+                )
+        else:  # pragma: no cover - 3.x without embeddings
+            annotation = raw_output
             mean_embeddings = None
+            if exclusive_speaker_mode:
+                logger.warning(
+                    "exclusive_speaker_mode=True requested but pipeline "
+                    "returned bare Annotation (3.x legacy). Falling back."
+                )
 
         # Collect turns, filtering by min_duration. Preserve start-time order.
         raw_turns: list[SpeakerTurn] = []
@@ -292,8 +357,10 @@ def diarize_audio_file(
         raw_turns.sort(key=lambda t: t.start)
 
         # pyannote returns embeddings in the order of annotation.labels(), which
-        # is the cluster-id order — same as the SPEAKER_NN suffix order in
-        # speaker-diarization-3.1. We line them up by index.
+        # is the cluster-id order — same as the SPEAKER_NN suffix order. In
+        # pyannote 4.x the regular and exclusive annotations share labels
+        # (they're renamed via the same mapping inside .apply()), so this
+        # index lookup works regardless of which annotation we picked above.
         pipeline_labels = list(annotation.labels())
         speaker_stats: dict[str, SpeakerStats] = {}
         if mean_embeddings is not None:

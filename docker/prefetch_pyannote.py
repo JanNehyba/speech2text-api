@@ -17,7 +17,17 @@ import sys
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import GatedRepoError
 
+# Both 3.1 and community-1 are baked into the image so the runtime pod can
+# switch between them via PYANNOTE_DIARIZATION_MODEL without a re-download.
+# Default at runtime is community-1 (pyannote 4.x, VBx clustering — see
+# diarize.py); 3.1 stays as a safety rollback.
+#
+# segmentation-3.0 and wespeaker-voxceleb-resnet34-LM are pyannote 3.1
+# dependencies. community-1 vendors its own segmentation + embedding +
+# PLDA inside the same repo (the `subfolder=` paths in
+# SpeakerDiarization.__init__), so no separate prefetch needed for those.
 MODELS = (
+    "pyannote/speaker-diarization-community-1",
     "pyannote/speaker-diarization-3.1",
     "pyannote/segmentation-3.0",
     "pyannote/wespeaker-voxceleb-resnet34-LM",

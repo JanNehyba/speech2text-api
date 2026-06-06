@@ -15,16 +15,18 @@ numpy>=1.26,<2
 # transformers is a transitive dep of faster-whisper for tokenizer utilities.
 # Pin the floor to a version that supports whisper-large-v3-turbo.
 transformers>=4.45,<5
-# Speaker diarization — pyannote.audio 3.x + CPU torch. The plain torch/torchaudio
+# Speaker diarization — pyannote.audio 4.x + CPU torch. The plain torch/torchaudio
 # wheels include the CUDA libraries (~2 GiB), so the Dockerfile reinstalls them
 # from the CPU index to keep the image slim. Declared here only for `pip install
 # -r requirements.txt` use; the Docker build does the heavy work in two steps.
 #
-# 3.1 had a known bug: `pipeline(audio, return_embeddings=True)` hits a
-# `torch.vstack: sizes of tensors must match` RuntimeError when the last
-# embedding window doesn't perfectly align with the 10-second feature
-# extractor's stride. Fixed in 3.2 (PR pyannote-audio#1657-ish). Pin >=3.3
-# for the polished version.
-pyannote.audio>=3.3,<4
+# 4.0 ships the community-1 pipeline with VBx clustering (DER -5.9% on
+# CALLHOME vs 3.1 per pyannote release notes / deep-research 2026-06-05).
+# The pipeline now returns a DiarizeOutput dataclass with both
+# `.speaker_diarization` (with overlap) and `.exclusive_speaker_diarization`
+# (one-speaker-per-moment) annotations, plus `.speaker_embeddings` as a
+# numpy ndarray. The old 3.x `return_embeddings=True` kwarg is gone — see
+# diarize.py for the migrated call site.
+pyannote.audio>=4.0,<5
 torch>=2.0,<3
 torchaudio>=2.0,<3

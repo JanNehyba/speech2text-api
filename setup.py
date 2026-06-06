@@ -38,7 +38,11 @@ setup(
         # of the transcription path stays light; the Docker build pulls
         # this in explicitly via requirements.txt.
         "diarize": [
-            "pyannote.audio>=3.3,<4",
+            # pyannote.audio 4.0 ships the community-1 diarization pipeline
+            # with VBx clustering (DER -5.9% on CALLHOME vs 3.1) and the
+            # new DiarizeOutput dataclass exposing both regular and
+            # exclusive_speaker_diarization annotations. See diarize.py.
+            "pyannote.audio>=4.0,<5",
             "torch>=2.0,<3",
             "torchaudio>=2.0,<3",
         ],

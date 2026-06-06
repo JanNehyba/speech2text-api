@@ -109,7 +109,7 @@ Add <code>?timestamps=true</code> to <code>/transcribe/{lang}/</code> to get
 segment-level start/end times for each phrase.
 </p>
 <p>
-POST <code>/diarize/</code> for speaker diarization (pyannote.audio 3.1).
+POST <code>/diarize/</code> for speaker diarization (pyannote.audio 4.x, community-1).
 </p>
 """.lstrip()
 
@@ -181,8 +181,13 @@ async def diarize(
     num_speakers: int = 2,
     min_duration: float = 0.5,
     return_segment_embeddings: bool = False,
+    exclusive_speaker_mode: bool = False,
 ) -> DiarizationResponse:
-    """Run pyannote.audio 3.1 speaker diarization on an uploaded audio file.
+    """Run pyannote.audio speaker diarization on an uploaded audio file.
+
+    Default model is ``pyannote/speaker-diarization-community-1`` (4.0
+    family, VBx clustering). Override via the ``PYANNOTE_DIARIZATION_MODEL``
+    env var on the pod.
 
     Query params:
         num_speakers: Exact speaker count hint (default 2 for 1-on-1
@@ -194,6 +199,11 @@ async def diarize(
             vector per turn. Used by QualReAI's merge/split flow in
             Phase 2. Off by default — embedding crops cost ~10-100 ms
             per turn on CPU and the F1 path doesn't need them.
+        exclusive_speaker_mode: When True, return the pyannote 4.x
+            *exclusive* diarization (one speaker per moment, no
+            overlap). Default False keeps the standard with-overlap
+            output that matches pyannote 3.x behaviour. No effect on
+            a 3.x pipeline.
 
     Concurrency: capped to one in-flight diarization per process. The
     second concurrent caller waits on a semaphore. Diarization on the
@@ -226,6 +236,7 @@ async def diarize(
                         num_speakers=num_speakers,
                         min_duration=min_duration,
                         return_segment_embeddings=return_segment_embeddings,
+                        exclusive_speaker_mode=exclusive_speaker_mode,
                     ),
                 )
             except RuntimeError as exc:
