@@ -341,6 +341,38 @@ def diarize_audio_file(
                     "returned bare Annotation (3.x legacy). Falling back."
                 )
 
+        # Observability: log which annotation branch ran. After the 2026-06-07
+        # qualreai audit (workflow wf_5c42b72b), we want a definitive trace
+        # in pod logs proving that exclusive_speaker_mode actually took the
+        # exclusive_speaker_diarization branch in production — and that None
+        # segments seen downstream come from silence gaps, not from this code
+        # silently dropping the flag.
+        source_label = (
+            "exclusive"
+            if (
+                exclusive_speaker_mode
+                and hasattr(raw_output, "exclusive_speaker_diarization")
+                and annotation is getattr(
+                    raw_output, "exclusive_speaker_diarization", None
+                )
+            )
+            else "with_overlap"
+        )
+        try:
+            track_count = sum(1 for _ in annotation.itertracks())
+            label_set = sorted(annotation.labels())
+        except Exception:  # noqa: BLE001
+            track_count = -1
+            label_set = []
+        logger.info(
+            "Diarization annotation source=%s, requested_exclusive=%s, "
+            "tracks=%d, labels=%s",
+            source_label,
+            exclusive_speaker_mode,
+            track_count,
+            label_set,
+        )
+
         # Collect turns, filtering by min_duration. Preserve start-time order.
         raw_turns: list[SpeakerTurn] = []
         label_durations: dict[str, float] = {}
