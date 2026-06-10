@@ -32,3 +32,20 @@ def test_whisper_with_timestamps() -> None:
     assert isinstance(result["segments"], list)
     assert all("start" in s and "end" in s and "text" in s for s in result["segments"])
     assert all(s["end"] >= s["start"] for s in result["segments"])
+    # word_timestamps not requested → words omitted.
+    assert result["words"] is None
+
+
+def test_whisper_with_word_timestamps() -> None:
+    wrapper = Whisper()
+    result = wrapper.transcribe_file(
+        test_record_paths["cs"], lang="cs", word_timestamps=True,
+    )
+
+    assert "testovací" in result["transcript"]
+    # Flat top-level list of {word, start, end} the diarization client uses
+    # to split a segment at a speaker boundary.
+    assert isinstance(result["words"], list)
+    assert len(result["words"]) >= 1
+    assert all("word" in w and "start" in w and "end" in w for w in result["words"])
+    assert all(w["end"] >= w["start"] for w in result["words"])

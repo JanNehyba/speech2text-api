@@ -36,14 +36,28 @@ class TranscriptSegment(BaseModel):
     text: str
 
 
+class TranscriptWord(BaseModel):
+    """One word with start/end timestamps in seconds.
+
+    Emitted only when the caller requests ``word_timestamps=true`` — the
+    diarization-aware client needs the per-word grid to split a Whisper
+    segment at a speaker boundary.
+    """
+    word: str
+    start: float
+    end: float
+
+
 class TranscriptResponse(BaseModel):
     """Response model.
 
     ``segments`` is omitted (None) for legacy callers that don't ask for
     timestamps, preserving wire compatibility with the original upstream.
+    ``words`` is likewise omitted unless ``word_timestamps=true``.
     """
     transcript: str
     segments: Optional[List[TranscriptSegment]] = None
+    words: Optional[List[TranscriptWord]] = None
 
 
 class DiarizationTurn(BaseModel):
@@ -145,6 +159,7 @@ async def transcribe_default(
     timestamps: bool = False,
     beam_size: Optional[int] = None,
     vad_filter: Optional[bool] = None,
+    word_timestamps: bool = False,
 ) -> TranscriptResponse:
     tmp_fname = await create_tmp_file(file)
     result = speech2text_wrapper.transcribe_file(
@@ -152,6 +167,7 @@ async def transcribe_default(
         return_timestamps=timestamps,
         beam_size=beam_size,
         vad_filter=vad_filter,
+        word_timestamps=word_timestamps,
     )
     return TranscriptResponse(**result)
 
@@ -163,6 +179,7 @@ async def transcribe_chosen_lang(
     timestamps: bool = False,
     beam_size: Optional[int] = None,
     vad_filter: Optional[bool] = None,
+    word_timestamps: bool = False,
 ) -> TranscriptResponse:
     tmp_fname = await create_tmp_file(file)
     result = speech2text_wrapper.transcribe_file(
@@ -171,6 +188,7 @@ async def transcribe_chosen_lang(
         return_timestamps=timestamps,
         beam_size=beam_size,
         vad_filter=vad_filter,
+        word_timestamps=word_timestamps,
     )
     return TranscriptResponse(**result)
 

@@ -103,6 +103,7 @@ class Whisper(Speech2Text):
         return_timestamps: bool = False,
         beam_size: Optional[int] = None,
         vad_filter: Optional[bool] = None,
+        word_timestamps: bool = False,
     ) -> Dict[str, Any]:
         """Transcribe an audio file.
 
@@ -111,11 +112,21 @@ class Whisper(Speech2Text):
         selector) can pick speed vs. quality without restarting the server.
         Pass ``None`` to use the env defaults.
 
+        ``word_timestamps`` opts into per-word timestamps. faster-whisper
+        computes these via a DTW over the model's cross-attention weights —
+        +10-30% inference time on CPU int8, so it stays OFF by default and
+        only the diarization-aware client requests it (QualReAI uses the
+        per-word grid to split a Whisper segment at a speaker boundary so a
+        short interviewer question doesn't get swallowed into the
+        respondent's answer).
+
         Returns:
           - ``transcript``: full text (always present)
           - ``segments``: list of {start, end, text} when ``return_timestamps``
             is True, otherwise ``None``. faster-whisper always emits segments
             with timestamps internally — we just decide whether to expose them.
+          - ``words``: flat list of {word, start, end} when ``word_timestamps``
+            is True, otherwise ``None``.
         """
         effective_beam = beam_size if beam_size is not None else self.beam_size
         effective_vad = vad_filter if vad_filter is not None else self.vad_filter
@@ -129,9 +140,7 @@ class Whisper(Speech2Text):
             language=lang,
             beam_size=effective_beam,
             vad_filter=effective_vad,
-            # Don't return word-level timestamps — segment level is enough and
-            # word-level adds non-trivial overhead.
-            word_timestamps=False,
+            word_timestamps=word_timestamps,
         )
 
         # The iterator only runs inference as it's consumed. Materialize once
@@ -152,4 +161,23 @@ class Whisper(Speech2Text):
                 if s.start is not None and s.end is not None and s.text
             ]
 
-        return {"transcript": transcript, "segments": segments_payload}
+        words_payload: Optional[List[Dict[str, Any]]] = None
+        if word_timestamps:
+            words_payload = []
+            for s in segments_list:
+                for w in (getattr(s, "words", None) or []):
+                    if w.start is None or w.end is None or not w.word:
+                        continue
+                    words_payload.append(
+                        {
+                            "word": w.word,
+                            "start": float(w.start),
+                            "end": float(w.end),
+                        }
+                    )
+
+        return {
+            "transcript": transcript,
+            "segments": segments_payload,
+            "words": words_payload,
+        }
