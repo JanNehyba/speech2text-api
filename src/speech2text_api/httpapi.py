@@ -196,7 +196,7 @@ async def transcribe_chosen_lang(
 @app.post("/diarize/", response_model=DiarizationResponse)
 async def diarize(
     file: UploadFile,
-    num_speakers: int = 2,
+    num_speakers: int | None = None,
     min_duration: float = 0.5,
     return_segment_embeddings: bool = False,
     exclusive_speaker_mode: bool = False,
@@ -208,9 +208,13 @@ async def diarize(
     env var on the pod.
 
     Query params:
-        num_speakers: Exact speaker count hint (default 2 for 1-on-1
-            interviews). Forces the clustering step to that many clusters
-            — the biggest single accuracy win for the 1-on-1 case.
+        num_speakers: Exact speaker count hint. When set, forces the
+            clustering step to that many clusters — the biggest single
+            accuracy win for the 1-on-1 case (caller sends 2). When
+            omitted / None (default), pyannote auto-detects the number of
+            speakers, which is what group interviews with an unknown /
+            large cast need — forcing a wrong exact count hurts, so the
+            caller omits the param when the researcher doesn't know it.
         min_duration: Discard turns shorter than this many seconds (default
             0.5). Filters out sub-100ms silence/cough artefacts.
         return_segment_embeddings: When True, also return one embedding

@@ -263,7 +263,7 @@ def _get_embedding_inference(pipeline: Pipeline) -> Inference:
 
 def diarize_audio_file(
     audio_path: str,
-    num_speakers: int = 2,
+    num_speakers: int | None = None,
     min_duration: float = 0.5,
     return_segment_embeddings: bool = False,
     exclusive_speaker_mode: bool = False,
@@ -273,9 +273,13 @@ def diarize_audio_file(
     Args:
         audio_path: Path to a decodable audio file. Resampling to 16 kHz
             mono is handled by pyannote / torchaudio internally.
-        num_speakers: Exact speaker count hint. Forces the clustering step
-            to that many clusters — the single biggest accuracy win for the
-            1-on-1 interview case in QualReAI (default 2).
+        num_speakers: Exact speaker count hint. When set, forces the
+            clustering step to that many clusters — the single biggest
+            accuracy win for the 1-on-1 interview case in QualReAI (caller
+            passes 2). When None (default), pyannote estimates the speaker
+            count itself; this is the path for group interviews with an
+            unknown / large cast, where forcing a wrong exact count would
+            hurt more than it helps.
         min_duration: Discard turns shorter than this many seconds.
             pyannote sometimes emits sub-100ms artefacts on silence.
         return_segment_embeddings: When True, also return a per-turn
