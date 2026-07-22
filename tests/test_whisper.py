@@ -1,6 +1,61 @@
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 from utils import test_record_paths
 
-from speech2text_api.whisper import Whisper
+from speech2text_api.whisper import Whisper, _parse_temperature_ladder
+
+
+# ---------------------------------------------------------------------------
+# Anti-hallucination params + hotwords (2026-07-22) — mock-based, no model load
+# ---------------------------------------------------------------------------
+
+
+def _mock_wrapper(monkeypatch):
+    """A Whisper wrapper whose model + audio decode are mocked, so we can
+    assert the kwargs passed to model.transcribe() without a real model."""
+    w = Whisper.__new__(Whisper)  # skip __init__ (which loads the model)
+    w.beam_size = 3
+    w.vad_filter = False
+    w.temperature = (0.0, 0.2, 0.4)
+    w.condition_on_previous_text = False
+    w.hallucination_silence_threshold = 2.0
+    seg = SimpleNamespace(start=0.0, end=1.0, text="ahoj", words=[])
+    w.model = MagicMock()
+    w.model.transcribe.return_value = (iter([seg]), SimpleNamespace())
+    import speech2text_api.whisper as mod
+    monkeypatch.setattr(mod.librosa, "load", lambda *a, **k: ([0.0], 16000))
+    return w
+
+
+def test_transcribe_passes_anti_hallucination_params(monkeypatch, tmp_path):
+    w = _mock_wrapper(monkeypatch)
+    w.transcribe_file(str(tmp_path / "x.wav"), lang="cs")
+    _, kwargs = w.model.transcribe.call_args
+    assert kwargs["temperature"] == (0.0, 0.2, 0.4)
+    assert kwargs["condition_on_previous_text"] is False
+    assert kwargs["hallucination_silence_threshold"] == 2.0
+
+
+def test_transcribe_passes_hotwords(monkeypatch, tmp_path):
+    w = _mock_wrapper(monkeypatch)
+    w.transcribe_file(str(tmp_path / "x.wav"), lang="cs", hotwords="RVP ČŠI Cermat")
+    _, kwargs = w.model.transcribe.call_args
+    assert kwargs["hotwords"] == "RVP ČŠI Cermat"
+
+
+def test_transcribe_empty_hotwords_becomes_none(monkeypatch, tmp_path):
+    w = _mock_wrapper(monkeypatch)
+    w.transcribe_file(str(tmp_path / "x.wav"), lang="cs", hotwords="   ")
+    _, kwargs = w.model.transcribe.call_args
+    assert kwargs["hotwords"] is None
+
+
+def test_temperature_ladder_parsing():
+    assert _parse_temperature_ladder("0.0,0.2,0.4") == (0.0, 0.2, 0.4)
+    assert _parse_temperature_ladder("0.0") == 0.0
+    assert _parse_temperature_ladder("xyz") == (0.0, 0.2, 0.4)
+    assert _parse_temperature_ladder("") == (0.0, 0.2, 0.4)
 
 
 def test_whisper_cs() -> None:

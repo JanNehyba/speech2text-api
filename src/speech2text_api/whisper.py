@@ -29,6 +29,24 @@ from faster_whisper import WhisperModel
 
 from speech2text_api.speech2text_abs import Speech2Text
 
+logger = logging.getLogger(__name__)
+
+
+def _parse_temperature_ladder(raw: str) -> Any:
+    """Parse "0.0,0.2,0.4" → (0.0, 0.2, 0.4); a single "0.0" → 0.0.
+
+    faster-whisper accepts either a float or a sequence of floats for
+    ``temperature`` (the sequence is the loop-suppression fallback ladder).
+    Falls back to the safe short ladder on any parse error.
+    """
+    try:
+        parts = [float(x) for x in raw.split(",") if x.strip() != ""]
+    except ValueError:
+        parts = []
+    if not parts:
+        return (0.0, 0.2, 0.4)
+    return parts[0] if len(parts) == 1 else tuple(parts)
+
 logger = logging.getLogger()
 
 # Whisper feature extractor expects 16 kHz mono. Resample upfront with librosa
@@ -96,6 +114,30 @@ class Whisper(Speech2Text):
             "1", "true", "yes", "on",
         )
 
+        # Anti-hallucination defaults (2026-07-22). faster-whisper's own
+        # defaults let large-v3-turbo fabricate plausible proper names on
+        # low-confidence segments and cascade a mishear forward. We tighten
+        # them to match the safer e-infra config, WITHOUT killing the
+        # temperature ladder entirely (the ladder is the loop-suppression
+        # mechanism — a bare temperature=[0.0] risks MORE repeat-loops).
+        #   * a SHORT ladder [0.0, 0.2, 0.4]: deterministic start + a rescue
+        #     against loops, but no drift-into-sampling on silence that the
+        #     full 6-step ladder (…→1.0) causes.
+        #   * condition_on_previous_text=False: the strongest lever — stops a
+        #     hallucination cascading across segments.
+        #   * hallucination_silence_threshold=2.0: skip hallucinations over
+        #     stretches of silence (faster-whisper default None = disabled).
+        self.temperature = _parse_temperature_ladder(
+            os.environ.get("FW_TEMPERATURE", "0.0,0.2,0.4")
+        )
+        self.condition_on_previous_text = os.environ.get(
+            "FW_CONDITION_ON_PREV", "false"
+        ).lower() in ("1", "true", "yes", "on")
+        _hst = os.environ.get("FW_HALLUCINATION_SILENCE_THRESHOLD", "2.0").strip()
+        self.hallucination_silence_threshold = (
+            float(_hst) if _hst and _hst.lower() not in ("none", "off", "") else None
+        )
+
     def transcribe_file(
         self,
         fpath: str,
@@ -104,6 +146,7 @@ class Whisper(Speech2Text):
         beam_size: Optional[int] = None,
         vad_filter: Optional[bool] = None,
         word_timestamps: bool = False,
+        hotwords: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Transcribe an audio file.
 
@@ -135,12 +178,23 @@ class Whisper(Speech2Text):
         # ffmpeg_read pickiness on phone-recorded m4a/mp3 files.
         np_seq, _sr = librosa.load(fpath, sr=WHISPER_SAMPLE_RATE, mono=True)
 
+        # hotwords: a decoder bias toward expected terms/names (domain
+        # glossary from QualReAI). Unlike initial_prompt it is NOT decoded as
+        # text, so it can't trigger the prompt-echo loops the 2026-05-20
+        # Veronika audit banned. None/empty → no bias.
+        effective_hotwords = hotwords.strip() if hotwords and hotwords.strip() else None
+
         segments_iter, _info = self.model.transcribe(
             np_seq,
             language=lang,
             beam_size=effective_beam,
             vad_filter=effective_vad,
             word_timestamps=word_timestamps,
+            # Anti-hallucination params (2026-07-22) — see __init__.
+            temperature=self.temperature,
+            condition_on_previous_text=self.condition_on_previous_text,
+            hallucination_silence_threshold=self.hallucination_silence_threshold,
+            hotwords=effective_hotwords,
         )
 
         # The iterator only runs inference as it's consumed. Materialize once

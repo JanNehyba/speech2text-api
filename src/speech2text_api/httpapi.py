@@ -5,7 +5,7 @@ import shutil
 import tempfile
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import HTMLResponse
@@ -160,6 +160,10 @@ async def transcribe_default(
     beam_size: Optional[int] = None,
     vad_filter: Optional[bool] = None,
     word_timestamps: bool = False,
+    # hotwords is a multipart FORM field (not a query param): a domain
+    # glossary with Czech diacritics is too long / would URL-encode-bloat the
+    # query. None → no decoder bias.
+    hotwords: Optional[str] = Form(None),
 ) -> TranscriptResponse:
     tmp_fname = await create_tmp_file(file)
     result = speech2text_wrapper.transcribe_file(
@@ -168,6 +172,7 @@ async def transcribe_default(
         beam_size=beam_size,
         vad_filter=vad_filter,
         word_timestamps=word_timestamps,
+        hotwords=hotwords,
     )
     return TranscriptResponse(**result)
 
@@ -180,6 +185,7 @@ async def transcribe_chosen_lang(
     beam_size: Optional[int] = None,
     vad_filter: Optional[bool] = None,
     word_timestamps: bool = False,
+    hotwords: Optional[str] = Form(None),
 ) -> TranscriptResponse:
     tmp_fname = await create_tmp_file(file)
     result = speech2text_wrapper.transcribe_file(
@@ -189,6 +195,7 @@ async def transcribe_chosen_lang(
         beam_size=beam_size,
         vad_filter=vad_filter,
         word_timestamps=word_timestamps,
+        hotwords=hotwords,
     )
     return TranscriptResponse(**result)
 
